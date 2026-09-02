@@ -157,6 +157,12 @@ def load_api_key_securely() -> Optional[str]:
 
 SEMANTIC_CONTRACT_PATH = PROJECT_ROOT / "Data" / "semantic" / "kpi_contract.json"
 
+# Bounded caches prevent repeated expensive work during the competition demo.
+_ANALYSIS_CACHE = {}
+_DATA_TRUST_CACHE = {}
+_MAX_ANALYSIS_CACHE = 12
+_MAX_DATA_TRUST_CACHE = 12
+
 
 def load_kpi_contract(kpi_id: Optional[str] = None) -> Dict[str, Any]:
     """Loads KPI semantic contract safely with zero secrets."""
@@ -200,6 +206,19 @@ def execute_decision_analysis(req_data: Dict[str, Any]) -> Dict[str, Any]:
 
     provider_mode = req_data.get("provider_mode", "mock").lower()
 
+    cache_key = (
+        req_data.get("scenario_id"),
+        req.get("date"),
+        req.get("kpi"),
+        req.get("market"),
+        req.get("category"),
+        req.get("product_code"),
+        provider_mode,
+    )
+    cached = _ANALYSIS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     # 1. Phase 3A Deterministic Engine
     t0_p3a = time.perf_counter()
     p3a_payload = run_analysis(req)
@@ -238,7 +257,15 @@ def execute_decision_analysis(req_data: Dict[str, Any]) -> Dict[str, Any]:
 
     # 5. Build Safe UI Response Payload
     kpi_contract_snippet = load_kpi_contract(req.get("kpi")).get("kpi")
-    data_trust_report = evaluate_data_trust(target_date=req.get("date"), target_market=req.get("market"))
+    trust_key = (req.get("date"), req.get("market"))
+    if trust_key not in _DATA_TRUST_CACHE:
+        _DATA_TRUST_CACHE[trust_key] = evaluate_data_trust(
+            target_date=req.get("date"),
+            target_market=req.get("market")
+        )
+        if len(_DATA_TRUST_CACHE) > _MAX_DATA_TRUST_CACHE:
+            _DATA_TRUST_CACHE.pop(next(iter(_DATA_TRUST_CACHE)))
+    data_trust_report = _DATA_TRUST_CACHE[trust_key]
     decision_gov = evaluate_decision_governance(p3a_payload, p3b_payload, scenario_id=req_data.get("scenario_id"))
 
     ui_response = {
@@ -262,6 +289,9 @@ def execute_decision_analysis(req_data: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
 
+    _ANALYSIS_CACHE[cache_key] = ui_response
+    if len(_ANALYSIS_CACHE) > _MAX_ANALYSIS_CACHE:
+        _ANALYSIS_CACHE.pop(next(iter(_ANALYSIS_CACHE)))
     return ui_response
 
 
@@ -375,12 +405,29 @@ class DecisionIntelligenceRequestHandler(BaseHTTPRequestHandler):
                 return
 
             try:
+                print(
+                    f"[ANALYZE] start scenario={req_data.get('scenario_id')} "
+                    f"date={req_data.get('date')} market={req_data.get('market')} "
+                    f"provider={req_data.get('provider_mode', 'mock')}",
+                    flush=True
+                )
                 response_data = execute_decision_analysis(req_data)
                 self._set_headers(200, "application/json")
                 self.wfile.write(json.dumps(response_data, indent=2).encode("utf-8"))
+                print(
+                    f"[ANALYZE] success scenario={req_data.get('scenario_id')}",
+                    flush=True
+                )
             except Exception as e:
+                print(
+                    f"[ANALYZE] FAILED: {type(e).__name__}: {e}",
+                    file=sys.stderr,
+                    flush=True
+                )
                 self._set_headers(500, "application/json")
-                self.wfile.write(json.dumps({"error": f"Analysis execution failed: {str(e)}"}).encode("utf-8"))
+                self.wfile.write(json.dumps({
+                    "error": f"Analysis execution failed: {type(e).__name__}: {str(e)}"
+                }).encode("utf-8"))
             return
 
         self._set_headers(404, "application/json")

@@ -30,7 +30,7 @@ class AnalyticalDataModel:
             if 'date' in df.columns:
                 df['date'] = pd.to_datetime(df['date'])
             self.__class__._cache[filename] = df
-        return self.__class__._cache[filename].copy()
+        return self.__class__._cache[filename]
 
     def get_sales(self) -> pd.DataFrame:
         return self._load_csv("fact_sales_monthly.csv")
@@ -74,7 +74,7 @@ class AnalyticalDataModel:
             joined = joined.merge(customers, on="customer_code", how="left")
             joined = joined.merge(markets, on="market", how="left")
             self.__class__._cache["joined_sales"] = joined
-        return self.__class__._cache["joined_sales"].copy()
+        return self.__class__._cache["joined_sales"]
 
     def apply_scope(self, df: pd.DataFrame, request: dict) -> pd.DataFrame:
         """
